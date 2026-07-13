@@ -452,6 +452,7 @@
       </form>
       <p class="subhead" style="margin-top:0;">Compras parceladas</p>
       <div id="lista-gastos-parcelados"><p class="loading">Carregando...</p></div>
+      <div id="bloco-gastos-parcelados-pagos"></div>
       <p class="subhead">Próximos vencimentos</p>
       <div id="lista-gastos-futuros"><p class="loading">Carregando...</p></div>
       <p class="subhead">Sem data definida</p>
@@ -730,7 +731,9 @@
     return { total, n, valorParcela, inicio, fim, parcelaAtual, parcelasRestantes };
   }
 
+  // Gasto quitado antecipadamente não entra mais no total mensal
   function gastoValorMensal(g){
+    if(g.paga) return 0;
     const pc = calcParcelas(g);
     return pc ? pc.valorParcela : Number(g.valor);
   }
@@ -757,6 +760,7 @@
     state.gastos = (g.data||[]).map(x=>({
       ...x, valorBase:x.valor_base, gastoRecorrencia:x.gasto_recorrencia||'mensal',
       numParcelas:x.num_parcelas, dataInicio:x.data_inicio, categoria:x.categoria||'outros',
+      paga:x.paga||false, dataPagamento:x.data_pagamento,
     }));
     state.historico = (h.data||[]).map(x=>({...x, data:new Date(x.created_at).getTime()}));
     state.pagamentosMes = (p.data||[]).map(x=>({...x, dividaId:x.divida_id, mesRef:x.mes_ref, data:new Date(x.created_at).getTime()}));
@@ -808,12 +812,15 @@
     const {data,error} = await sb.from('gastos').insert({
       user_id:currentUser.id, nome:g.nome, valor:g.valor, valor_base:g.valorBase||null, tipo:g.tipo,
       categoria:g.categoria||'outros', vencimento:g.vencimento||null, gasto_recorrencia:g.gastoRecorrencia,
-      num_parcelas:g.numParcelas||null, data_inicio:g.dataInicio||null,
+      num_parcelas:g.numParcelas||null, data_inicio:g.dataInicio||null, paga:false,
     }).select().single();
-    if(!error) state.gastos.push({...data, valorBase:data.valor_base, gastoRecorrencia:data.gasto_recorrencia||'mensal', numParcelas:data.num_parcelas, dataInicio:data.data_inicio, categoria:data.categoria||'outros'});
+    if(!error) state.gastos.push({...data, valorBase:data.valor_base, gastoRecorrencia:data.gasto_recorrencia||'mensal', numParcelas:data.num_parcelas, dataInicio:data.data_inicio, categoria:data.categoria||'outros', paga:false, dataPagamento:null});
     render();
   }
-  async function atualizarGasto(g){ await sb.from('gastos').update({valor:g.valor}).eq('id',g.id); }
+  // Agora também persiste paga / data_pagamento (usado para quitar compras parceladas antecipadamente)
+  async function atualizarGasto(g){
+    await sb.from('gastos').update({valor:g.valor, paga:g.paga||false, data_pagamento:g.dataPagamento||null}).eq('id',g.id);
+  }
   async function deletarGasto(id){ await sb.from('gastos').delete().eq('id',id); state.gastos = state.gastos.filter(x=>x.id!==id); render(); }
 
   async function salvarHistorico(tipo, descricao){
@@ -960,14 +967,20 @@
       const pc = calcParcelas(g);
       const catTag = `<span class="tag categoria">${gastoCatLabel(g.categoria)}</span>`;
       if(pc){
+        const quitadoTag = g.paga ? `<p class="imeta" style="margin-top:2px;"><span class="tag paga">quitado${g.dataPagamento?' em '+fmtData(g.dataPagamento):''}</span></p>` : '';
+        const botaoQuitar = g.paga
+          ? `<button class="check-btn undo" data-id="${g.id}" data-action="reabrir-gasto">reabrir</button>`
+          : `<button class="check-btn" data-id="${g.id}" data-action="quitar-gasto">quitar ✓</button>`;
         return `
-          <div class="item" style="flex-wrap:wrap;">
+          <div class="item ${g.paga?'paga':''}" style="flex-wrap:wrap;">
             <div style="flex:1;min-width:0;">
               <p class="iname">${g.nome}</p>
               <p class="imeta">${fmt(pc.valorParcela)}/mês <span class="tag parcelado">parcela ${pc.parcelaAtual}/${pc.n}</span> ${catTag}</p>
               <p class="imeta" style="margin-top:2px;">total ${fmt(pc.total)} · término ${pc.fim.toLocaleDateString('pt-BR',{month:'long',year:'numeric'})}</p>
               <p class="imeta" style="margin-top:2px;color:var(--ok);">faltam ${pc.parcelasRestantes} parcela${pc.parcelasRestantes===1?'':'s'} · ${fmt(pc.parcelasRestantes*pc.valorParcela)}</p>
+              ${quitadoTag}
             </div>
+            ${botaoQuitar}
             <button class="del" data-id="${g.id}" data-kind="gasto">✕</button>
           </div>`;
       }
@@ -990,12 +1003,16 @@
       const n = Number(g.numParcelas);
       return new Date(y, m-1+n-1, d).toISOString().slice(0,10);
     }
-    const parcelados = state.gastos.filter(g=>g.tipo==='parcelado'&&g.numParcelas&&g.dataInicio);
+    // Parcelados ativos (não quitados) e parcelados já quitados antecipadamente
+    const parcelados = state.gastos.filter(g=>g.tipo==='parcelado'&&g.numParcelas&&g.dataInicio&&!g.paga);
+    const parceladosQuitados = state.gastos.filter(g=>g.tipo==='parcelado'&&g.numParcelas&&g.dataInicio&&g.paga);
     const comData = state.gastos.filter(g=>g.tipo!=='parcelado'&&g.vencimento).sort((a,b)=>a.vencimento.localeCompare(b.vencimento));
     const semData = state.gastos.filter(g=>g.tipo!=='parcelado'&&!g.vencimento);
     document.getElementById('lista-gastos-parcelados').innerHTML = parcelados.length===0
       ? '<p class="empty">Nenhuma compra parcelada cadastrada.</p>'
       : parcelados.sort((a,b)=>fimParcela(a).localeCompare(fimParcela(b))).map(itemGastoHtml).join('');
+    document.getElementById('bloco-gastos-parcelados-pagos').innerHTML = parceladosQuitados.length===0 ? '' :
+      '<p class="subhead">Parcelamentos quitados</p>' + parceladosQuitados.map(itemGastoHtml).join('');
     document.getElementById('lista-gastos-futuros').innerHTML = comData.length===0 ? '<p class="empty">Nenhum gasto com data ainda.</p>' : comData.map(itemGastoHtml).join('');
     document.getElementById('lista-gastos').innerHTML = semData.length===0 ? '<p class="empty">Nenhum gasto sem data.</p>' : semData.map(itemGastoHtml).join('');
 
@@ -1023,7 +1040,31 @@
       };
     });
 
-    document.querySelectorAll('.check-btn:not(.ajustar-btn):not(.undo)').forEach(btn=>{
+    // Quitar compra parcelada antecipadamente
+    document.querySelectorAll('[data-action="quitar-gasto"]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const g = state.gastos.find(x=>x.id===btn.dataset.id);
+        if(!g) return;
+        g.paga = true;
+        g.dataPagamento = new Date().toISOString().slice(0,10);
+        await atualizarGasto(g);
+        await salvarHistorico('gasto', `${g.nome}: parcelamento quitado antecipadamente em ${fmtData(g.dataPagamento)}`);
+        render();
+      };
+    });
+    // Reabrir compra parcelada quitada por engano
+    document.querySelectorAll('[data-action="reabrir-gasto"]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const g = state.gastos.find(x=>x.id===btn.dataset.id);
+        if(!g) return;
+        g.paga = false;
+        g.dataPagamento = null;
+        await atualizarGasto(g);
+        render();
+      };
+    });
+
+    document.querySelectorAll('.check-btn:not(.ajustar-btn):not(.undo):not([data-action="quitar-gasto"])').forEach(btn=>{
       btn.onclick = async ()=>{
         const d = state.dividas.find(x=>x.id===btn.dataset.id);
         if(!d) return;
@@ -1057,6 +1098,7 @@
 
     document.querySelectorAll('.undo').forEach(btn=>{
       btn.onclick = async ()=>{
+        if(btn.dataset.action==='reabrir-gasto') return; // já tratado acima
         const d = state.dividas.find(x=>x.id===btn.dataset.id);
         if(!d) return;
         d.paga=false; d.dataPagamento=null;
@@ -1410,7 +1452,7 @@
   function renderSimulacao(sobraMensal, ativas){
     const el = document.getElementById('sim-content');
     const negativadas = ativas.filter(d=>d.status==='negativado');
-    const parcelados = state.gastos.filter(g=>g.tipo==='parcelado'&&g.numParcelas&&g.dataInicio);
+    const parcelados = state.gastos.filter(g=>g.tipo==='parcelado'&&g.numParcelas&&g.dataInicio&&!g.paga);
     const temCompromissos = state.gastos.some(g=>g.vencimento)||ativas.some(d=>d.parcelado)||negativadas.length>0;
     if(!temCompromissos){ el.innerHTML='<p class="empty">Cadastre gastos com vencimento, parcele dívidas ou marque como negativadas.</p>'; return; }
     const hoje = new Date();
