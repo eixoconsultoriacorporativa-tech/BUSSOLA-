@@ -1858,15 +1858,24 @@
     if(!valor||!taxa||!prazo||!antecipa||antecipa>=prazo) return;
     const calcTotal = (v,t,n)=>{ if(t===0) return v; return v*(t*Math.pow(1+t,n))/(Math.pow(1+t,n)-1)*n; };
     const totalOriginal = calcTotal(valor,taxa,prazo);
-    const saldoNaAntecipacao = valor*Math.pow(1+taxa,antecipa) - (calcTotal(valor,taxa,prazo)/prazo)*((Math.pow(1+taxa,antecipa)-1)/taxa);
-    const economia = totalOriginal - (calcTotal(valor,taxa,antecipa) + saldoNaAntecipacao);
+    const pmtOriginal = totalOriginal/prazo;
+    // Saldo devedor restante no momento da antecipação (valor presente das parcelas que faltam)
+    const saldoNaAntecipacao = taxa===0
+      ? pmtOriginal*(prazo-antecipa)
+      : valor*Math.pow(1+taxa,antecipa) - pmtOriginal*((Math.pow(1+taxa,antecipa)-1)/taxa);
+    // O que o usuário efetivamente paga: as parcelas já pagas até a antecipação + o saldo devedor quitado à vista
+    const pagoAteAntecipacao = pmtOriginal*antecipa;
+    const totalAntecipando = pagoAteAntecipacao + Math.max(saldoNaAntecipacao,0);
+    const economia = totalOriginal - totalAntecipando;
     const el = document.getElementById('ca-resultado');
     el.innerHTML = resultadoHtml([
       {label:'Total pagando em '+prazo+' meses',valor:fmtCalc(totalOriginal),cls:'cr-destaque'},
-      {label:'Total pagando em '+antecipa+' meses',valor:fmtCalc(totalOriginal-Math.max(economia,0))},
+      {label:'Parcelas pagas até o mês '+antecipa,valor:fmtCalc(pagoAteAntecipacao)},
+      {label:'Saldo devedor quitado à vista',valor:fmtCalc(Math.max(saldoNaAntecipacao,0))},
+      {label:'Total pagando em '+antecipa+' meses',valor:fmtCalc(totalAntecipando)},
       {label:'Economia estimada',valor:fmtCalc(Math.max(economia,0)),cls:'cr-ok'},
       {label:'Meses economizados',valor:(prazo-antecipa)+' meses'},
-    ],[{label:'→ Adicionar como Dívida',acao:'divida',payload:{nome:'Dívida a antecipar',valor:Math.round(valor),minimo:Math.round(valor/antecipa)}}]);
+    ],[{label:'→ Adicionar como Dívida',acao:'divida',payload:{nome:'Dívida a antecipar',valor:Math.round(valor),minimo:Math.round(pmtOriginal)}}]);
     el.querySelectorAll('.calc-enviar button').forEach(b=>{ b.onclick = ()=> enviarParaApp(b.dataset.acao, JSON.parse(b.dataset.payload)); });
   };
 
