@@ -795,6 +795,7 @@
     await sb.from('dividas').update({
       paga:d.paga, ordem:d.ordem, data_pagamento:d.dataPagamento||null, parcelado:d.parcelado||false,
       total_parcelas:d.totalParcelas||null, parcela_atual:d.parcelaAtual||null, valor_parcela:d.valorParcela||null, valor:d.valor,
+      minimo:d.minimo,
     }).eq('id',d.id);
   }
   async function deletarDivida(id){ await sb.from('dividas').delete().eq('id',id); state.dividas = state.dividas.filter(x=>x.id!==id); render(); }
@@ -1073,6 +1074,7 @@
           const n = Number(nRaw);
           if(!nRaw||!n||n<2) return;
           d.parcelado=true; d.totalParcelas=n; d.parcelaAtual=1; d.valorParcela=Math.round((d.valor/n)*100)/100;
+          d.minimo=d.valorParcela; // sincroniza o mínimo mensal com a parcela real, para não distorcer o cálculo de sobra
           await atualizarDivida(d);
           await salvarHistorico('gasto',`${d.nome}: parcelada em ${n}x de ${fmt(d.valorParcela)}`);
           render(); return;
