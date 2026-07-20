@@ -856,7 +856,10 @@
     if(!error) state.metas.push({...data, valorAlvo:data.valor_alvo, valorAtual:data.valor_atual, dataAlvo:data.data_alvo});
     render();
   }
-  async function atualizarMeta(m){ await sb.from('metas').update({valor_atual:m.valorAtual}).eq('id',m.id); }
+  async function atualizarMeta(m){
+    const {error} = await sb.from('metas').update({valor_atual:m.valorAtual}).eq('id',m.id);
+    if(error){ alert('Não foi possível salvar o aporte na nuvem. Tente novamente ou verifique sua conexão.\n\nDetalhe técnico: '+error.message); }
+  }
   async function deletarMeta(id){ await sb.from('metas').delete().eq('id',id); state.metas = state.metas.filter(x=>x.id!==id); render(); }
 
   async function salvarInvestimento(i){
