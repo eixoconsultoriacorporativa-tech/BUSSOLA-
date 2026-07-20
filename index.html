@@ -499,26 +499,34 @@
 
     <section id="tab-investimentos">
       <form class="entry" id="form-investimento">
-        <div class="field-row"><input id="i-nome" placeholder="Nome (ex: Tesouro Selic, PETR4)" required></div>
+        <div class="field-row"><input id="i-nome" placeholder="Nome (ex: Tesouro Selic, PETR4, HGLG11)" required></div>
         <div class="field-row">
           <select id="i-tipo">
             <option value="renda-fixa">Renda fixa</option>
             <option value="fundos">Fundos</option>
             <option value="acoes">Ações</option>
+            <option value="fii">Fundo Imobiliário (FII)</option>
             <option value="cripto">Cripto</option>
             <option value="outro">Outro</option>
           </select>
           <input id="i-data-aporte" type="date">
         </div>
-        <div class="field-row">
+        <div class="field-row" id="i-valor-row">
           <input id="i-valor-investido" type="text" inputmode="decimal" placeholder="Valor investido (R$)" required>
           <input id="i-valor-atual" type="text" inputmode="decimal" placeholder="Valor atual (R$)">
+        </div>
+        <div class="field-row" id="i-fii-row" style="display:none;">
+          <input id="i-num-cotas" type="text" inputmode="decimal" placeholder="Nº de cotas">
+          <input id="i-valor-cota" type="text" inputmode="decimal" placeholder="Valor da cota agora (R$)">
+        </div>
+        <div class="field-row" id="i-fii-div-row" style="display:none;">
+          <input id="i-dividendo-cota" type="text" inputmode="decimal" placeholder="Último dividendo por cota (R$)">
         </div>
         <button class="primary" type="submit">Adicionar investimento</button>
       </form>
       <div class="card">
         <h2>Resumo da carteira</h2>
-        <p class="sub" style="margin-bottom:0;">Total investido, valor atual e rentabilidade.</p>
+        <p class="sub" style="margin-bottom:0;">Total investido, valor atual, rentabilidade e renda passiva de FIIs.</p>
         <div id="resumo-carteira" style="margin-top:10px;"></div>
       </div>
       <p class="subhead" style="margin-top:0;">Seus investimentos</p>
@@ -693,7 +701,7 @@
   const statusLabel = s => s==='negativado'?'negativado':s==='atrasado'?'atrasado':'em dia';
   const catLabel = c => ({salario:'Salário fixo',freelance:'Freelance/autônomo',negocio:'Negócio próprio',extra:'Renda extra',outro:'Outra'}[c]||c);
   const gastoCatLabel = c => ({moradia:'Moradia',alimentacao:'Alimentação',transporte:'Transporte',saude:'Saúde',educacao:'Educação',lazer:'Lazer',vestuario:'Vestuário',outros:'Outros'}[c]||c);
-  const invTipoLabel = t => ({'renda-fixa':'Renda fixa',fundos:'Fundos',acoes:'Ações',cripto:'Cripto',outro:'Outro'}[t]||t);
+  const invTipoLabel = t => ({'renda-fixa':'Renda fixa',fundos:'Fundos',acoes:'Ações',fii:'FII',cripto:'Cripto',outro:'Outro'}[t]||t);
   const diaLabel = en => en.dia ? ` <span class="tag em-dia">dia ${en.dia}${en.recorrencia==='unica'?'':'/mês'}</span>` : '';
   const tipoLabel = t => t==='fixo-imutavel'?'fixo':t==='fixo-consumo'?'consumo':t==='parcelado'?'parcelado':'variável';
 
@@ -767,7 +775,8 @@
     state.consignados = (cn.data||[]).map(x=>({...x, entradaId:x.entrada_id, numParcelas:x.num_parcelas}));
     state.orcamentos = (o.data||[]).map(x=>({...x}));
     state.metas = (m.data||[]).map(x=>({...x, valorAlvo:x.valor_alvo, valorAtual:x.valor_atual, dataAlvo:x.data_alvo}));
-    state.investimentos = (inv.data||[]).map(x=>({...x, valorInvestido:x.valor_investido, valorAtual:x.valor_atual, dataAporte:x.data_aporte}));
+    state.investimentos = (inv.data||[]).map(x=>({...x, valorInvestido:x.valor_investido, valorAtual:x.valor_atual, dataAporte:x.data_aporte,
+      numCotas:x.num_cotas, valorCota:x.valor_cota, dividendoCota:x.dividendo_cota, totalDividendos:x.total_dividendos||0, dataUltimoDividendo:x.data_ultimo_dividendo}));
     render();
   }
 
@@ -863,18 +872,31 @@
   async function deletarMeta(id){ await sb.from('metas').delete().eq('id',id); state.metas = state.metas.filter(x=>x.id!==id); render(); }
 
   async function salvarInvestimento(i){
+    const totalDividendos = (i.numCotas&&i.dividendoCota) ? Math.round(i.numCotas*i.dividendoCota*100)/100 : 0;
+    const dataUltimoDividendo = (i.numCotas&&i.dividendoCota) ? new Date().toISOString().slice(0,10) : null;
     const {data,error} = await sb.from('investimentos').insert({
       user_id:currentUser.id, nome:i.nome, tipo:i.tipo, valor_investido:i.valorInvestido,
       valor_atual:i.valorAtual, data_aporte:i.dataAporte||null,
+      num_cotas:i.numCotas||null, valor_cota:i.valorCota||null, dividendo_cota:i.dividendoCota||null,
+      total_dividendos:totalDividendos, data_ultimo_dividendo:dataUltimoDividendo,
     }).select().single();
-    if(!error) state.investimentos.push({...data, valorInvestido:data.valor_investido, valorAtual:data.valor_atual, dataAporte:data.data_aporte});
+    if(!error) state.investimentos.push({...data, valorInvestido:data.valor_investido, valorAtual:data.valor_atual, dataAporte:data.data_aporte,
+      numCotas:data.num_cotas, valorCota:data.valor_cota, dividendoCota:data.dividendo_cota,
+      totalDividendos:data.total_dividendos||0, dataUltimoDividendo:data.data_ultimo_dividendo});
     render();
   }
-  async function atualizarInvestimento(i){ await sb.from('investimentos').update({valor_atual:i.valorAtual}).eq('id',i.id); }
+  async function atualizarInvestimento(i){
+    const {error} = await sb.from('investimentos').update({
+      valor_atual:i.valorAtual, num_cotas:i.numCotas||null, valor_cota:i.valorCota||null,
+      dividendo_cota:i.dividendoCota||null, total_dividendos:i.totalDividendos||0, data_ultimo_dividendo:i.dataUltimoDividendo||null,
+    }).eq('id',i.id);
+    if(error){ alert('Não foi possível salvar a atualização do investimento na nuvem.\n\nDetalhe técnico: '+error.message); }
+  }
   async function deletarInvestimento(id){ await sb.from('investimentos').delete().eq('id',id); state.investimentos = state.investimentos.filter(x=>x.id!==id); render(); }
 
   function totalInvestidoValor(){ return state.investimentos.reduce((a,i)=>a+Number(i.valorInvestido),0); }
   function totalAtualInvestimentos(){ return state.investimentos.reduce((a,i)=>a+Number(i.valorAtual),0); }
+  function totalRendaPassivaMensal(){ return state.investimentos.filter(i=>i.tipo==='fii'&&i.numCotas&&i.dividendoCota).reduce((a,i)=>a+Number(i.numCotas)*Number(i.dividendoCota),0); }
 
   // ── RENDER PRINCIPAL ──────────────────────────────────────────────────────
   function render(){
@@ -1230,18 +1252,34 @@
     const totalAtual = totalAtualInvestimentos();
     const ganho = totalAtual - totalInv;
     const pctGanho = totalInv>0 ? ((ganho/totalInv)*100).toFixed(1) : '0.0';
+    const rendaPassivaMensal = totalRendaPassivaMensal();
     document.getElementById('resumo-carteira').innerHTML = `
       <div class="cat-row"><span class="cat-name">Total investido</span><span class="cat-val">${fmt(totalInv)}</span></div>
       <div class="cat-row"><span class="cat-name">Valor atual</span><span class="cat-val">${fmt(totalAtual)}</span></div>
+      <div class="cat-row"><span class="cat-name">Rentabilidade</span>
+        <span class="cat-val" style="color:${ganho>=0?'var(--ok)':'var(--danger)'};">${ganho>=0?'+':''}${fmt(ganho)} (${pctGanho}%)</span></div>
       <div class="cat-row" style="border-top:1px solid var(--ink);margin-top:4px;padding-top:9px;">
-        <span class="cat-name" style="color:var(--ink);font-weight:500;">Rentabilidade</span>
-        <span class="cat-val" style="color:${ganho>=0?'var(--ok)':'var(--danger)'};">${ganho>=0?'+':''}${fmt(ganho)} (${pctGanho}%)</span>
+        <span class="cat-name" style="color:var(--ink);font-weight:500;">Renda passiva mensal (FIIs)</span>
+        <span class="cat-val" style="color:var(--ok);">${fmt(rendaPassivaMensal)}</span>
       </div>`;
     const el = document.getElementById('lista-investimentos');
     if(state.investimentos.length===0){ el.innerHTML='<p class="empty">Nenhum investimento cadastrado ainda.</p>'; return; }
     el.innerHTML = state.investimentos.map(i=>{
       const g = Number(i.valorAtual) - Number(i.valorInvestido);
       const pct = Number(i.valorInvestido)>0 ? ((g/Number(i.valorInvestido))*100).toFixed(1) : '0.0';
+      const isFii = i.tipo==='fii';
+      const temCotas = isFii && i.numCotas && i.valorCota;
+      const temDividendo = isFii && i.numCotas && i.dividendoCota;
+      const dyMensal = temDividendo ? ((Number(i.dividendoCota)/Number(i.valorCota))*100) : null;
+      const fiiInfo = isFii ? `
+            ${temCotas ? `<p class="imeta" style="margin-top:2px;">${i.numCotas} cotas × ${fmt(i.valorCota)}/cota</p>` : ''}
+            ${temDividendo ? `<p class="imeta" style="margin-top:2px;color:var(--ok);">renda mensal: ${fmt(Number(i.numCotas)*Number(i.dividendoCota))} · DY ${dyMensal.toFixed(2)}%/mês (≈${(dyMensal*12).toFixed(1)}%/ano)</p>` : ''}
+            ${i.totalDividendos>0 ? `<p class="imeta" style="margin-top:2px;">recebido em dividendos até hoje: ${fmt(i.totalDividendos)}${i.dataUltimoDividendo?' · último em '+fmtData(i.dataUltimoDividendo):''}</p>` : ''}
+      ` : '';
+      const botoes = isFii
+        ? `<button class="check-btn atualizar-cota-btn" data-id="${i.id}">atualizar cota</button>
+           <button class="check-btn lancar-dividendo-btn" data-id="${i.id}">lançar dividendo</button>`
+        : `<button class="check-btn atualizar-inv-btn" data-id="${i.id}">atualizar valor</button>`;
       return `
         <div class="item" style="flex-wrap:wrap;">
           <div style="flex:1;min-width:0;">
@@ -1249,9 +1287,10 @@
             <p class="imeta">${fmt(i.valorAtual)} <span class="tag investimento">${invTipoLabel(i.tipo)}</span>
               <span class="tag ${g>=0?'ganho':'perda'}">${g>=0?'+':''}${pct}%</span></p>
             <p class="imeta" style="margin-top:2px;">investido: ${fmt(i.valorInvestido)}${i.dataAporte?' · em '+fmtData(i.dataAporte):''}</p>
+            ${fiiInfo}
           </div>
           <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
-            <button class="check-btn atualizar-inv-btn" data-id="${i.id}">atualizar valor</button>
+            ${botoes}
           </div>
           <button class="del" data-id="${i.id}" data-kind="investimento">✕</button>
         </div>`;
@@ -1268,6 +1307,37 @@
         i.valorAtual = novo;
         await atualizarInvestimento(i);
         await salvarHistorico('investimento', `${i.nome}: valor atualizado de ${fmt(anterior)} para ${fmt(novo)}`);
+        render();
+      };
+    });
+    document.querySelectorAll('.atualizar-cota-btn').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const i = state.investimentos.find(x=>x.id===btn.dataset.id);
+        if(!i) return;
+        const raw = prompt(`Novo valor da cota de "${i.nome}"?`, i.valorCota||'');
+        const novaCota = parseValor(raw);
+        if(!raw||novaCota<=0) return;
+        const anterior = i.valorCota;
+        i.valorCota = novaCota;
+        if(i.numCotas) i.valorAtual = Math.round(Number(i.numCotas)*novaCota*100)/100;
+        await atualizarInvestimento(i);
+        await salvarHistorico('investimento', `${i.nome}: cota atualizada de ${fmt(anterior||0)} para ${fmt(novaCota)}`);
+        render();
+      };
+    });
+    document.querySelectorAll('.lancar-dividendo-btn').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const i = state.investimentos.find(x=>x.id===btn.dataset.id);
+        if(!i) return;
+        const raw = prompt(`Dividendo por cota recebido este mês em "${i.nome}"?`, i.dividendoCota||'');
+        const novoDividendo = parseValor(raw);
+        if(!raw||novoDividendo<=0) return;
+        i.dividendoCota = novoDividendo;
+        i.dataUltimoDividendo = new Date().toISOString().slice(0,10);
+        const rendaRecebida = i.numCotas ? Math.round(Number(i.numCotas)*novoDividendo*100)/100 : 0;
+        i.totalDividendos = Math.round((Number(i.totalDividendos||0)+rendaRecebida)*100)/100;
+        await atualizarInvestimento(i);
+        await salvarHistorico('investimento', `${i.nome}: dividendo de ${fmt(novoDividendo)}/cota recebido${rendaRecebida?' (total '+fmt(rendaRecebida)+')':''}`);
         render();
       };
     });
@@ -1580,6 +1650,22 @@
   document.getElementById('g-tipo').addEventListener('change', toggleCamposGasto);
   toggleCamposGasto();
 
+  function toggleCamposInvestimento(){
+    const tipo = document.getElementById('i-tipo').value;
+    const fiiRow = document.getElementById('i-fii-row');
+    const fiiDivRow = document.getElementById('i-fii-div-row');
+    const valorAtualInput = document.getElementById('i-valor-atual');
+    if(tipo==='fii'){
+      fiiRow.style.display='flex'; fiiDivRow.style.display='flex';
+      valorAtualInput.placeholder = 'Valor atual (calculado pelas cotas, opcional)';
+    } else {
+      fiiRow.style.display='none'; fiiDivRow.style.display='none';
+      valorAtualInput.placeholder = 'Valor atual (R$)';
+    }
+  }
+  document.getElementById('i-tipo').addEventListener('change', toggleCamposInvestimento);
+  toggleCamposInvestimento();
+
   function atualizarPreviewParcela(){
     const valor = parseValor(document.getElementById('g-valor').value);
     const n = Number(document.getElementById('g-num-parcelas').value);
@@ -1698,11 +1784,19 @@
     const tipo = document.getElementById('i-tipo').value;
     const dataAporte = document.getElementById('i-data-aporte').value||null;
     const valorInvestido = parseValor(document.getElementById('i-valor-investido').value);
-    const valorAtual = parseValor(document.getElementById('i-valor-atual').value)||valorInvestido;
+    let valorAtual = parseValor(document.getElementById('i-valor-atual').value)||valorInvestido;
+    let numCotas = null, valorCota = null, dividendoCota = null;
+    if(tipo==='fii'){
+      numCotas = parseValor(document.getElementById('i-num-cotas').value)||null;
+      valorCota = parseValor(document.getElementById('i-valor-cota').value)||null;
+      dividendoCota = parseValor(document.getElementById('i-dividendo-cota').value)||null;
+      if(numCotas&&valorCota) valorAtual = Math.round(numCotas*valorCota*100)/100;
+    }
     if(!nome||!valorInvestido){ btn.disabled=false; return; }
-    await salvarInvestimento({nome,tipo,dataAporte,valorInvestido,valorAtual});
-    await salvarHistorico('investimento',`${nome}: aporte de ${fmt(valorInvestido)} (${invTipoLabel(tipo)})`);
-    e.target.reset(); btn.disabled=false;
+    await salvarInvestimento({nome,tipo,dataAporte,valorInvestido,valorAtual,numCotas,valorCota,dividendoCota});
+    const rendaTxt = (tipo==='fii'&&numCotas&&dividendoCota) ? ` · renda mensal estimada ${fmt(numCotas*dividendoCota)}` : '';
+    await salvarHistorico('investimento',`${nome}: aporte de ${fmt(valorInvestido)} (${invTipoLabel(tipo)})${rendaTxt}`);
+    e.target.reset(); toggleCamposInvestimento(); btn.disabled=false;
   });
 
   // ── AUTH ──────────────────────────────────────────────────────────────────
