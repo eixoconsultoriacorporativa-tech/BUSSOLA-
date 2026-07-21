@@ -297,6 +297,7 @@
     <button data-tab="orcamento">Orçamento</button>
     <button data-tab="metas">Metas</button>
     <button data-tab="investimentos">Investimentos</button>
+    <button data-tab="patrimonio">Patrimônio</button>
     <button data-tab="plano">Plano do mês</button>
     <button data-tab="linha">Linha do tempo</button>
     <button data-tab="graficos">Gráficos</button>
@@ -436,9 +437,16 @@
             <option value="outros">Outros</option>
           </select>
         </div>
+        <div class="field-row" id="g-modo-parcela-row" style="display:none;">
+          <button type="button" class="calc-modo-btn active" data-modo-parc="total" style="flex:1;">Por valor total</button>
+          <button type="button" class="calc-modo-btn" data-modo-parc="parcela" style="flex:1;">Por valor da parcela</button>
+        </div>
         <div class="field-row" id="g-parcelas-row" style="display:none;">
           <input id="g-num-parcelas" type="number" min="2" max="600" placeholder="Nº de parcelas (ex: 340)">
           <input id="g-data-inicio" type="date" placeholder="Data 1ª parcela">
+        </div>
+        <div class="field-row" id="g-valor-parcela-row" style="display:none;">
+          <input id="g-valor-parcela" type="text" inputmode="decimal" placeholder="Valor da parcela (R$)">
         </div>
         <div class="field-row" id="g-vencimento-row">
           <input id="g-vencimento" type="date">
@@ -531,6 +539,32 @@
       </div>
       <p class="subhead" style="margin-top:0;">Seus investimentos</p>
       <div id="lista-investimentos"><p class="loading">Carregando...</p></div>
+    </section>
+
+    <section id="tab-patrimonio">
+      <div class="card">
+        <h2>Patrimônio consolidado</h2>
+        <p class="sub" style="margin-bottom:0;">Ativos financeiros + bens materiais − dívidas.</p>
+        <div id="resumo-patrimonio" style="margin-top:10px;"><p class="loading">Carregando...</p></div>
+      </div>
+      <form class="entry" id="form-bem">
+        <div class="field-row"><input id="b-nome" placeholder="Nome (ex: Apartamento, Carro)" required></div>
+        <div class="field-row">
+          <select id="b-tipo">
+            <option value="imovel">Imóvel</option>
+            <option value="veiculo">Veículo</option>
+            <option value="outro-bem">Outro bem</option>
+          </select>
+          <input id="b-data-aquisicao" type="date">
+        </div>
+        <div class="field-row">
+          <input id="b-valor-pago" type="text" inputmode="decimal" placeholder="Valor pago (R$)" required>
+          <input id="b-valor-atual" type="text" inputmode="decimal" placeholder="Valor de mercado atual (R$)">
+        </div>
+        <button class="primary" type="submit">Adicionar bem</button>
+      </form>
+      <p class="subhead" style="margin-top:0;">Seus bens materiais</p>
+      <div id="lista-bens"><p class="loading">Carregando...</p></div>
     </section>
 
     <section id="tab-plano">
@@ -726,9 +760,11 @@
 
   function calcParcelas(g){
     if(g.tipo!=='parcelado'||!g.numParcelas||!g.dataInicio) return null;
-    const total = Number(g.valor);
     const n = Number(g.numParcelas);
-    const valorParcela = Math.round((total/n)*100)/100;
+    // Se a parcela foi informada manualmente (modo "por valor da parcela"), usa ela como fonte da verdade;
+    // caso contrário (modo padrão "não mudar"), calcula dividindo o valor total pelo nº de parcelas
+    const valorParcela = g.valorParcela ? Number(g.valorParcela) : Math.round((Number(g.valor)/n)*100)/100;
+    const total = g.valorParcela ? Math.round(valorParcela*n*100)/100 : Number(g.valor);
     const [y,m,d] = g.dataInicio.split('-').map(Number);
     const inicio = new Date(y,m-1,d);
     const fim = new Date(y,m-1+n-1,d);
@@ -768,14 +804,14 @@
     state.gastos = (g.data||[]).map(x=>({
       ...x, valorBase:x.valor_base, gastoRecorrencia:x.gasto_recorrencia||'mensal',
       numParcelas:x.num_parcelas, dataInicio:x.data_inicio, categoria:x.categoria||'outros',
-      paga:x.paga||false, dataPagamento:x.data_pagamento,
+      paga:x.paga||false, dataPagamento:x.data_pagamento, valorParcela:x.valor_parcela,
     }));
     state.historico = (h.data||[]).map(x=>({...x, data:new Date(x.created_at).getTime()}));
     state.pagamentosMes = (p.data||[]).map(x=>({...x, dividaId:x.divida_id, mesRef:x.mes_ref, data:new Date(x.created_at).getTime()}));
     state.consignados = (cn.data||[]).map(x=>({...x, entradaId:x.entrada_id, numParcelas:x.num_parcelas}));
     state.orcamentos = (o.data||[]).map(x=>({...x}));
     state.metas = (m.data||[]).map(x=>({...x, valorAlvo:x.valor_alvo, valorAtual:x.valor_atual, dataAlvo:x.data_alvo}));
-    state.investimentos = (inv.data||[]).map(x=>({...x, valorInvestido:x.valor_investido, valorAtual:x.valor_atual, dataAporte:x.data_aporte,
+    state.investimentos = (inv.data||[]).map(x=>({...x, valorInvestido:x.valor_investido, valorAtual:x.valor_atual, dataAporte:x.data_aporte, classe:x.classe||'financeiro',
       numCotas:x.num_cotas, valorCota:x.valor_cota, dividendoCota:x.dividendo_cota, totalDividendos:x.total_dividendos||0, dataUltimoDividendo:x.data_ultimo_dividendo}));
     render();
   }
@@ -822,14 +858,14 @@
     const {data,error} = await sb.from('gastos').insert({
       user_id:currentUser.id, nome:g.nome, valor:g.valor, valor_base:g.valorBase||null, tipo:g.tipo,
       categoria:g.categoria||'outros', vencimento:g.vencimento||null, gasto_recorrencia:g.gastoRecorrencia,
-      num_parcelas:g.numParcelas||null, data_inicio:g.dataInicio||null, paga:false,
+      num_parcelas:g.numParcelas||null, data_inicio:g.dataInicio||null, paga:false, valor_parcela:g.valorParcela||null,
     }).select().single();
-    if(!error) state.gastos.push({...data, valorBase:data.valor_base, gastoRecorrencia:data.gasto_recorrencia||'mensal', numParcelas:data.num_parcelas, dataInicio:data.data_inicio, categoria:data.categoria||'outros', paga:false, dataPagamento:null});
+    if(!error) state.gastos.push({...data, valorBase:data.valor_base, gastoRecorrencia:data.gasto_recorrencia||'mensal', numParcelas:data.num_parcelas, dataInicio:data.data_inicio, categoria:data.categoria||'outros', paga:false, dataPagamento:null, valorParcela:data.valor_parcela});
     render();
   }
   // Agora também persiste paga / data_pagamento (usado para quitar compras parceladas antecipadamente)
   async function atualizarGasto(g){
-    await sb.from('gastos').update({valor:g.valor, paga:g.paga||false, data_pagamento:g.dataPagamento||null}).eq('id',g.id);
+    await sb.from('gastos').update({valor:g.valor, paga:g.paga||false, data_pagamento:g.dataPagamento||null, valor_parcela:g.valorParcela||null}).eq('id',g.id);
   }
   async function deletarGasto(id){ await sb.from('gastos').delete().eq('id',id); state.gastos = state.gastos.filter(x=>x.id!==id); render(); }
 
@@ -876,12 +912,12 @@
     const dataUltimoDividendo = (i.numCotas&&i.dividendoCota) ? new Date().toISOString().slice(0,10) : null;
     const {data,error} = await sb.from('investimentos').insert({
       user_id:currentUser.id, nome:i.nome, tipo:i.tipo, valor_investido:i.valorInvestido,
-      valor_atual:i.valorAtual, data_aporte:i.dataAporte||null,
+      valor_atual:i.valorAtual, data_aporte:i.dataAporte||null, classe:i.classe||'financeiro',
       num_cotas:i.numCotas||null, valor_cota:i.valorCota||null, dividendo_cota:i.dividendoCota||null,
       total_dividendos:totalDividendos, data_ultimo_dividendo:dataUltimoDividendo,
     }).select().single();
     if(!error) state.investimentos.push({...data, valorInvestido:data.valor_investido, valorAtual:data.valor_atual, dataAporte:data.data_aporte,
-      numCotas:data.num_cotas, valorCota:data.valor_cota, dividendoCota:data.dividendo_cota,
+      classe:data.classe||'financeiro', numCotas:data.num_cotas, valorCota:data.valor_cota, dividendoCota:data.dividendo_cota,
       totalDividendos:data.total_dividendos||0, dataUltimoDividendo:data.data_ultimo_dividendo});
     render();
   }
@@ -894,8 +930,9 @@
   }
   async function deletarInvestimento(id){ await sb.from('investimentos').delete().eq('id',id); state.investimentos = state.investimentos.filter(x=>x.id!==id); render(); }
 
-  function totalInvestidoValor(){ return state.investimentos.reduce((a,i)=>a+Number(i.valorInvestido),0); }
-  function totalAtualInvestimentos(){ return state.investimentos.reduce((a,i)=>a+Number(i.valorAtual),0); }
+  // classe: 'financeiro' (ações, FIIs, renda fixa...) ou 'material' (imóveis, veículos...). Sem argumento, soma tudo.
+  function totalInvestidoValor(classe){ return state.investimentos.filter(i=>!classe||(i.classe||'financeiro')===classe).reduce((a,i)=>a+Number(i.valorInvestido),0); }
+  function totalAtualInvestimentos(classe){ return state.investimentos.filter(i=>!classe||(i.classe||'financeiro')===classe).reduce((a,i)=>a+Number(i.valorAtual),0); }
   function totalRendaPassivaMensal(){ return state.investimentos.filter(i=>i.tipo==='fii'&&i.numCotas&&i.dividendoCota).reduce((a,i)=>a+Number(i.numCotas)*Number(i.dividendoCota),0); }
 
   // ── RENDER PRINCIPAL ──────────────────────────────────────────────────────
@@ -909,9 +946,10 @@
     const totalMinimos = ativas.reduce((a,d)=>a+Number(d.minimo),0);
     const totalGastos = state.gastos.reduce((a,g)=>a+gastoValorMensal(g),0);
     const sobra = rendaTotal - totalGastos - totalMinimos;
-    const totalInvestidoAtual = totalAtualInvestimentos();
+    const totalInvestidoAtual = totalAtualInvestimentos('financeiro');
+    const totalBensMateriais = totalAtualInvestimentos('material');
     const totalMetas = state.metas.reduce((a,m)=>a+Number(m.valorAtual),0);
-    const patrimonio = totalInvestidoAtual + totalMetas - totalDividas;
+    const patrimonio = totalInvestidoAtual + totalBensMateriais + totalMetas - totalDividas;
 
     document.getElementById('s-renda').textContent = fmt(rendaTotal);
     const detalheEl = document.getElementById('s-renda-detalhe');
@@ -970,7 +1008,8 @@
           </div>
           <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
             <button class="check-btn" data-id="${d.id}" data-action="pagar">${d.parcelado?`parcela ${d.parcelaAtual} ✓`:'paga ✓'}</button>
-            ${d.parcelado?'':`<button class="check-btn" data-id="${d.id}" data-action="parcelar">parcelar</button>`}
+            ${d.parcelado?'':`<button class="check-btn" data-id="${d.id}" data-action="parcelar">parcelar (total)</button>
+            <button class="check-btn" data-id="${d.id}" data-action="parcelar-por-parcela">parcelar (por parcela)</button>`}
           </div>
           <button class="del" data-id="${d.id}" data-kind="divida">✕</button>
         </div>`;
@@ -1104,6 +1143,19 @@
           await salvarHistorico('gasto',`${d.nome}: parcelada em ${n}x de ${fmt(d.valorParcela)}`);
           render(); return;
         }
+        if(btn.dataset.action==='parcelar-por-parcela'){
+          const parcelaRaw = prompt(`Qual o valor da parcela de "${d.nome}"?`,'');
+          const parcela = parseValor(parcelaRaw);
+          if(!parcelaRaw||!parcela||parcela<=0) return;
+          // Nº de parcelas restantes = valor total da dívida ÷ valor da parcela (arredondado para cima)
+          const n = Math.max(1, Math.ceil(Number(d.valor)/parcela));
+          d.parcelado=true; d.totalParcelas=n; d.parcelaAtual=1; d.valorParcela=parcela;
+          d.valor = Math.round(parcela*n*100)/100; // ajusta o total para bater com parcela × parcelas
+          d.minimo=d.valorParcela;
+          await atualizarDivida(d);
+          await salvarHistorico('gasto',`${d.nome}: parcelada em ${n}x de ${fmt(parcela)} (calculado pelo valor da parcela)`);
+          render(); return;
+        }
         const isoHoje = new Date().toISOString().slice(0,10);
         if(d.parcelado && d.parcelaAtual < d.totalParcelas){
           const vp = d.valorParcela;
@@ -1151,6 +1203,7 @@
     renderOrcamento(totalGastos);
     renderMetas();
     renderInvestimentos();
+    renderPatrimonio();
     renderHistorico();
     renderSimulacao(sobra, ativas);
     renderPlano(rendaTotal, totalGastos, totalMinimos, sobra, ativas);
@@ -1248,8 +1301,8 @@
 
   // ── INVESTIMENTOS ────────────────────────────────────────────────────────
   function renderInvestimentos(){
-    const totalInv = totalInvestidoValor();
-    const totalAtual = totalAtualInvestimentos();
+    const totalInv = totalInvestidoValor('financeiro');
+    const totalAtual = totalAtualInvestimentos('financeiro');
     const ganho = totalAtual - totalInv;
     const pctGanho = totalInv>0 ? ((ganho/totalInv)*100).toFixed(1) : '0.0';
     const rendaPassivaMensal = totalRendaPassivaMensal();
@@ -1263,8 +1316,9 @@
         <span class="cat-val" style="color:var(--ok);">${fmt(rendaPassivaMensal)}</span>
       </div>`;
     const el = document.getElementById('lista-investimentos');
-    if(state.investimentos.length===0){ el.innerHTML='<p class="empty">Nenhum investimento cadastrado ainda.</p>'; return; }
-    el.innerHTML = state.investimentos.map(i=>{
+    const investimentosFinanceiros = state.investimentos.filter(i=>(i.classe||'financeiro')==='financeiro');
+    if(investimentosFinanceiros.length===0){ el.innerHTML='<p class="empty">Nenhum investimento cadastrado ainda.</p>'; return; }
+    el.innerHTML = investimentosFinanceiros.map(i=>{
       const g = Number(i.valorAtual) - Number(i.valorInvestido);
       const pct = Number(i.valorInvestido)>0 ? ((g/Number(i.valorInvestido))*100).toFixed(1) : '0.0';
       const isFii = i.tipo==='fii';
@@ -1338,6 +1392,68 @@
         i.totalDividendos = Math.round((Number(i.totalDividendos||0)+rendaRecebida)*100)/100;
         await atualizarInvestimento(i);
         await salvarHistorico('investimento', `${i.nome}: dividendo de ${fmt(novoDividendo)}/cota recebido${rendaRecebida?' (total '+fmt(rendaRecebida)+')':''}`);
+        render();
+      };
+    });
+  }
+
+  // ── PATRIMÔNIO (bens materiais: imóveis, veículos, outros) ────────────────
+  const bemTipoLabel = t => ({imovel:'Imóvel',veiculo:'Veículo','outro-bem':'Outro bem'}[t]||t);
+
+  async function salvarBem(b){
+    await salvarInvestimento({
+      nome:b.nome, tipo:b.tipo, dataAporte:b.dataAquisicao,
+      valorInvestido:b.valorPago, valorAtual:b.valorAtual, classe:'material',
+    });
+  }
+
+  function renderPatrimonio(){
+    const ativosFinanceiros = totalAtualInvestimentos('financeiro');
+    const bensMateriais = totalAtualInvestimentos('material');
+    const totalMetasAtual = state.metas.reduce((a,m)=>a+Number(m.valorAtual),0);
+    const totalDividasAtivas = pendentes().reduce((a,d)=>a+Number(d.valor),0);
+    const patrimonioLiquido = ativosFinanceiros + bensMateriais + totalMetasAtual - totalDividasAtivas;
+    document.getElementById('resumo-patrimonio').innerHTML = `
+      <div class="cat-row"><span class="cat-name">Ativos financeiros (investimentos)</span><span class="cat-val">${fmt(ativosFinanceiros)}</span></div>
+      <div class="cat-row"><span class="cat-name">Bens materiais (imóveis, veículos...)</span><span class="cat-val">${fmt(bensMateriais)}</span></div>
+      <div class="cat-row"><span class="cat-name">Metas (guardado)</span><span class="cat-val">${fmt(totalMetasAtual)}</span></div>
+      <div class="cat-row"><span class="cat-name">Total em dívidas</span><span class="cat-val" style="color:var(--danger);">−${fmt(totalDividasAtivas)}</span></div>
+      <div class="cat-row" style="border-top:1px solid var(--ink);margin-top:4px;padding-top:9px;">
+        <span class="cat-name" style="color:var(--ink);font-weight:500;">Patrimônio líquido total</span>
+        <span class="cat-val" style="color:${patrimonioLiquido>=0?'var(--ok)':'var(--danger)'};">${fmt(patrimonioLiquido)}</span>
+      </div>`;
+    const el = document.getElementById('lista-bens');
+    const bens = state.investimentos.filter(i=>i.classe==='material');
+    if(bens.length===0){ el.innerHTML='<p class="empty">Nenhum bem material cadastrado ainda.</p>'; return; }
+    el.innerHTML = bens.map(b=>{
+      const g = Number(b.valorAtual) - Number(b.valorInvestido);
+      const pct = Number(b.valorInvestido)>0 ? ((g/Number(b.valorInvestido))*100).toFixed(1) : '0.0';
+      return `
+        <div class="item" style="flex-wrap:wrap;">
+          <div style="flex:1;min-width:0;">
+            <p class="iname">${b.nome}</p>
+            <p class="imeta">${fmt(b.valorAtual)} <span class="tag investimento">${bemTipoLabel(b.tipo)}</span>
+              <span class="tag ${g>=0?'ganho':'perda'}">${g>=0?'+':''}${pct}%</span></p>
+            <p class="imeta" style="margin-top:2px;">valor pago: ${fmt(b.valorInvestido)}${b.dataAporte?' · em '+fmtData(b.dataAporte):''}</p>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
+            <button class="check-btn atualizar-bem-btn" data-id="${b.id}">atualizar valor</button>
+          </div>
+          <button class="del" data-id="${b.id}" data-kind="investimento">✕</button>
+        </div>`;
+    }).join('');
+    document.querySelectorAll('#lista-bens .del').forEach(btn=>{ btn.onclick = ()=> deletarInvestimento(btn.dataset.id); });
+    document.querySelectorAll('.atualizar-bem-btn').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const b = state.investimentos.find(x=>x.id===btn.dataset.id);
+        if(!b) return;
+        const raw = prompt(`Novo valor de mercado de "${b.nome}"?`, b.valorAtual);
+        const novo = parseValor(raw);
+        if(!raw||novo<0) return;
+        const anterior = b.valorAtual;
+        b.valorAtual = novo;
+        await atualizarInvestimento(b);
+        await salvarHistorico('investimento', `${b.nome}: valor de mercado atualizado de ${fmt(anterior)} para ${fmt(novo)}`);
         render();
       };
     });
@@ -1639,16 +1755,47 @@
     };
   });
 
+  let modoParcelaGasto = 'total';
+
   function toggleCamposGasto(){
     const tipo = document.getElementById('g-tipo').value;
     const parcelasRow = document.getElementById('g-parcelas-row');
     const vencRow = document.getElementById('g-vencimento-row');
+    const modoRow = document.getElementById('g-modo-parcela-row');
+    const valorParcelaRow = document.getElementById('g-valor-parcela-row');
+    const valorInput = document.getElementById('g-valor');
     const preview = document.getElementById('g-parcela-preview');
-    if(tipo==='parcelado'){ parcelasRow.style.display='flex'; vencRow.style.display='none'; }
-    else { parcelasRow.style.display='none'; vencRow.style.display='flex'; preview.style.display='none'; }
+    if(tipo==='parcelado'){
+      parcelasRow.style.display='flex'; vencRow.style.display='none'; modoRow.style.display='flex';
+      aplicarModoParcelaGasto();
+    } else {
+      parcelasRow.style.display='none'; vencRow.style.display='flex'; modoRow.style.display='none';
+      valorParcelaRow.style.display='none'; valorInput.style.display='block'; valorInput.required=true;
+      preview.style.display='none';
+    }
+  }
+  function aplicarModoParcelaGasto(){
+    const valorInput = document.getElementById('g-valor');
+    const valorParcelaRow = document.getElementById('g-valor-parcela-row');
+    if(modoParcelaGasto==='parcela'){
+      valorInput.style.display='none'; valorInput.required=false;
+      valorParcelaRow.style.display='flex';
+    } else {
+      valorInput.style.display='block'; valorInput.required=true;
+      valorParcelaRow.style.display='none';
+    }
   }
   document.getElementById('g-tipo').addEventListener('change', toggleCamposGasto);
   toggleCamposGasto();
+  document.querySelectorAll('[data-modo-parc]').forEach(btn=>{
+    btn.onclick = ()=>{
+      modoParcelaGasto = btn.dataset.modoParc;
+      document.querySelectorAll('[data-modo-parc]').forEach(b=>b.classList.remove('active'));
+      btn.classList.add('active');
+      aplicarModoParcelaGasto();
+      atualizarPreviewParcela();
+    };
+  });
 
   function toggleCamposInvestimento(){
     const tipo = document.getElementById('i-tipo').value;
@@ -1667,19 +1814,25 @@
   toggleCamposInvestimento();
 
   function atualizarPreviewParcela(){
-    const valor = parseValor(document.getElementById('g-valor').value);
     const n = Number(document.getElementById('g-num-parcelas').value);
     const dataInicio = document.getElementById('g-data-inicio').value;
     const preview = document.getElementById('g-parcela-preview');
-    if(valor&&n&&n>=2&&dataInicio){
-      const parcela = Math.round((valor/n)*100)/100;
+    let parcela;
+    if(modoParcelaGasto==='parcela'){
+      parcela = parseValor(document.getElementById('g-valor-parcela').value);
+    } else {
+      const valor = parseValor(document.getElementById('g-valor').value);
+      parcela = (valor&&n) ? Math.round((valor/n)*100)/100 : 0;
+    }
+    if(parcela&&n&&n>=2&&dataInicio){
       const [y,m,d] = dataInicio.split('-').map(Number);
       const fim = new Date(y,m-1+n-1,d);
+      const totalCalc = Math.round(parcela*n*100)/100;
       preview.style.display='block';
-      preview.textContent = `${n}x de ${fmt(parcela)} · término em ${fim.toLocaleDateString('pt-BR',{month:'long',year:'numeric'})}`;
+      preview.textContent = `${n}x de ${fmt(parcela)} · total ${fmt(totalCalc)} · término em ${fim.toLocaleDateString('pt-BR',{month:'long',year:'numeric'})}`;
     } else { preview.style.display='none'; }
   }
-  ['g-valor','g-num-parcelas','g-data-inicio'].forEach(id=>{
+  ['g-valor','g-num-parcelas','g-data-inicio','g-valor-parcela'].forEach(id=>{
     document.getElementById(id).addEventListener('input', ()=>{ if(document.getElementById('g-tipo').value==='parcelado') atualizarPreviewParcela(); });
   });
 
@@ -1735,8 +1888,6 @@
     e.preventDefault();
     const btn = e.target.querySelector('button'); btn.disabled=true;
     const nome = document.getElementById('g-nome').value.trim();
-    const valor = parseValor(document.getElementById('g-valor').value);
-    if(!nome||!valor){ btn.disabled=false; return; }
     const tipo = document.getElementById('g-tipo').value;
     const categoria = document.getElementById('g-categoria').value;
     const vencimento = tipo!=='parcelado' ? (document.getElementById('g-vencimento').value||null) : null;
@@ -1744,11 +1895,27 @@
     const numParcelas = tipo==='parcelado' ? Number(document.getElementById('g-num-parcelas').value)||null : null;
     const dataInicio = tipo==='parcelado' ? (document.getElementById('g-data-inicio').value||null) : null;
     if(tipo==='parcelado'&&(!numParcelas||!dataInicio)){ btn.disabled=false; alert('Informe o número de parcelas e a data da 1ª parcela.'); return; }
-    await salvarGasto({nome,valor,tipo,categoria,vencimento,gastoRecorrencia,valorBase:tipo==='fixo-consumo'?valor:null,numParcelas,dataInicio});
+
+    let valor, valorParcelaInformada = null;
+    if(tipo==='parcelado' && modoParcelaGasto==='parcela'){
+      // Calcula pelo valor da parcela: total = parcela × parcelas restantes (nº de parcelas)
+      valorParcelaInformada = parseValor(document.getElementById('g-valor-parcela').value);
+      if(!valorParcelaInformada){ btn.disabled=false; alert('Informe o valor da parcela.'); return; }
+      valor = Math.round(valorParcelaInformada*numParcelas*100)/100;
+    } else {
+      // Comportamento padrão (não muda): informa o valor total, parcela é calculada dividindo
+      valor = parseValor(document.getElementById('g-valor').value);
+    }
+    if(!nome||!valor){ btn.disabled=false; return; }
+
+    await salvarGasto({nome,valor,tipo,categoria,vencimento,gastoRecorrencia,valorBase:tipo==='fixo-consumo'?valor:null,numParcelas,dataInicio,valorParcela:valorParcelaInformada});
     const tipoTxt = tipoLabel(tipo);
-    const descExtra = tipo==='parcelado'&&numParcelas ? ` · ${numParcelas}x de ${fmt(Math.round((valor/numParcelas)*100)/100)}` : vencimento?` · vence ${fmtData(vencimento)}`:'';
+    const parcelaExibida = valorParcelaInformada || (numParcelas?Math.round((valor/numParcelas)*100)/100:0);
+    const descExtra = tipo==='parcelado'&&numParcelas ? ` · ${numParcelas}x de ${fmt(parcelaExibida)}` : vencimento?` · vence ${fmtData(vencimento)}`:'';
     await salvarHistorico('gasto',`${nome}: ${fmt(valor)} (${tipoTxt}, ${gastoCatLabel(categoria)})${descExtra}`);
-    e.target.reset(); toggleCamposGasto();
+    e.target.reset(); modoParcelaGasto='total';
+    document.querySelectorAll('[data-modo-parc]').forEach(b=>b.classList.toggle('active', b.dataset.modoParc==='total'));
+    toggleCamposGasto();
     document.getElementById('g-parcela-preview').style.display='none';
     btn.disabled=false;
   });
@@ -1797,6 +1964,20 @@
     const rendaTxt = (tipo==='fii'&&numCotas&&dividendoCota) ? ` · renda mensal estimada ${fmt(numCotas*dividendoCota)}` : '';
     await salvarHistorico('investimento',`${nome}: aporte de ${fmt(valorInvestido)} (${invTipoLabel(tipo)})${rendaTxt}`);
     e.target.reset(); toggleCamposInvestimento(); btn.disabled=false;
+  });
+
+  document.getElementById('form-bem').addEventListener('submit', async e=>{
+    e.preventDefault();
+    const btn = e.target.querySelector('button'); btn.disabled=true;
+    const nome = document.getElementById('b-nome').value.trim();
+    const tipo = document.getElementById('b-tipo').value;
+    const dataAquisicao = document.getElementById('b-data-aquisicao').value||null;
+    const valorPago = parseValor(document.getElementById('b-valor-pago').value);
+    const valorAtual = parseValor(document.getElementById('b-valor-atual').value)||valorPago;
+    if(!nome||!valorPago){ btn.disabled=false; return; }
+    await salvarBem({nome,tipo,dataAquisicao,valorPago,valorAtual});
+    await salvarHistorico('investimento',`${nome}: bem material adicionado (${bemTipoLabel(tipo)}) · valor pago ${fmt(valorPago)}`);
+    e.target.reset(); btn.disabled=false;
   });
 
   // ── AUTH ──────────────────────────────────────────────────────────────────
