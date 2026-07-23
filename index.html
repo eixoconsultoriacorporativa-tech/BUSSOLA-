@@ -437,16 +437,9 @@
             <option value="outros">Outros</option>
           </select>
         </div>
-        <div class="field-row" id="g-modo-parcela-row" style="display:none;">
-          <button type="button" class="calc-modo-btn active" data-modo-parc="total" style="flex:1;">Por valor total</button>
-          <button type="button" class="calc-modo-btn" data-modo-parc="parcela" style="flex:1;">Por valor da parcela</button>
-        </div>
         <div class="field-row" id="g-parcelas-row" style="display:none;">
           <input id="g-num-parcelas" type="number" min="2" max="600" placeholder="Nº de parcelas (ex: 340)">
           <input id="g-data-inicio" type="date" placeholder="Data 1ª parcela">
-        </div>
-        <div class="field-row" id="g-valor-parcela-row" style="display:none;">
-          <input id="g-valor-parcela" type="text" inputmode="decimal" placeholder="Valor da parcela (R$)">
         </div>
         <div class="field-row" id="g-vencimento-row">
           <input id="g-vencimento" type="date">
@@ -697,7 +690,6 @@
 <script>
 (async function(){
   // ── CONFIGURAÇÃO SUPABASE ──────────────────────────────────────────────────
-  // Troque pelos dados do SEU projeto Supabase (Settings > API)
   const SUPA_URL = 'https://omkigjiqkncyimtucoku.supabase.co';
   const SUPA_KEY = 'sb_publishable_BBxe2cOMqSpWcFpM_ro1QQ_Mipcvp6j';
   const sb = supabase.createClient(SUPA_URL, SUPA_KEY);
@@ -761,18 +753,17 @@
   function calcParcelas(g){
     if(g.tipo!=='parcelado'||!g.numParcelas||!g.dataInicio) return null;
     const n = Number(g.numParcelas);
-    // Se a parcela foi informada manualmente (modo "por valor da parcela"), usa ela como fonte da verdade;
-    // caso contrário (modo padrão "não mudar"), calcula dividindo o valor total pelo nº de parcelas
+    // valorParcela é fixo (definido na criação) e parcelaAtual avança só quando o usuário confirma o pagamento —
+    // isso permite decrementar o valor total corretamente, igual já acontece com dívidas parceladas.
     const valorParcela = g.valorParcela ? Number(g.valorParcela) : Math.round((Number(g.valor)/n)*100)/100;
-    const total = g.valorParcela ? Math.round(valorParcela*n*100)/100 : Number(g.valor);
+    const parcelaAtual = Math.min(g.parcelaAtual || 1, n);
+    const total = Math.round(valorParcela*n*100)/100; // valor total original (fixo, não muda com os pagamentos)
     const [y,m,d] = g.dataInicio.split('-').map(Number);
     const inicio = new Date(y,m-1,d);
     const fim = new Date(y,m-1+n-1,d);
-    const hoje = new Date();
-    const mesesPassados = (hoje.getFullYear()-inicio.getFullYear())*12 + (hoje.getMonth()-inicio.getMonth());
-    const parcelaAtual = Math.min(Math.max(mesesPassados+1,1), n);
+    const dataProxima = new Date(y,m-1+(parcelaAtual-1),d); // vencimento da próxima parcela pendente
     const parcelasRestantes = n - parcelaAtual + 1;
-    return { total, n, valorParcela, inicio, fim, parcelaAtual, parcelasRestantes };
+    return { total, n, valorParcela, inicio, fim, dataProxima, parcelaAtual, parcelasRestantes };
   }
 
   // Gasto quitado antecipadamente não entra mais no total mensal
@@ -804,7 +795,7 @@
     state.gastos = (g.data||[]).map(x=>({
       ...x, valorBase:x.valor_base, gastoRecorrencia:x.gasto_recorrencia||'mensal',
       numParcelas:x.num_parcelas, dataInicio:x.data_inicio, categoria:x.categoria||'outros',
-      paga:x.paga||false, dataPagamento:x.data_pagamento, valorParcela:x.valor_parcela,
+      paga:x.paga||false, dataPagamento:x.data_pagamento, valorParcela:x.valor_parcela, parcelaAtual:x.parcela_atual||1,
     }));
     state.historico = (h.data||[]).map(x=>({...x, data:new Date(x.created_at).getTime()}));
     state.pagamentosMes = (p.data||[]).map(x=>({...x, dividaId:x.divida_id, mesRef:x.mes_ref, data:new Date(x.created_at).getTime()}));
@@ -816,7 +807,7 @@
     render();
   }
 
-  // ── SUPABASE: SALVAR (entradas/dívidas/gastos/consignados — igual ao original) ──
+  // ── SUPABASE: SALVAR ──
   async function salvarEntrada(en){
     const {data,error} = await sb.from('entradas').insert({
       user_id:currentUser.id, nome:en.nome, valor:en.valor,
@@ -858,14 +849,18 @@
     const {data,error} = await sb.from('gastos').insert({
       user_id:currentUser.id, nome:g.nome, valor:g.valor, valor_base:g.valorBase||null, tipo:g.tipo,
       categoria:g.categoria||'outros', vencimento:g.vencimento||null, gasto_recorrencia:g.gastoRecorrencia,
-      num_parcelas:g.numParcelas||null, data_inicio:g.dataInicio||null, paga:false, valor_parcela:g.valorParcela||null,
+      num_parcelas:g.numParcelas||null, data_inicio:g.dataInicio||null, paga:false,
+      valor_parcela:g.valorParcela||null, parcela_atual:g.tipo==='parcelado'?1:null,
     }).select().single();
-    if(!error) state.gastos.push({...data, valorBase:data.valor_base, gastoRecorrencia:data.gasto_recorrencia||'mensal', numParcelas:data.num_parcelas, dataInicio:data.data_inicio, categoria:data.categoria||'outros', paga:false, dataPagamento:null, valorParcela:data.valor_parcela});
+    if(!error) state.gastos.push({...data, valorBase:data.valor_base, gastoRecorrencia:data.gasto_recorrencia||'mensal', numParcelas:data.num_parcelas, dataInicio:data.data_inicio, categoria:data.categoria||'outros', paga:false, dataPagamento:null, valorParcela:data.valor_parcela, parcelaAtual:data.parcela_atual||1});
     render();
   }
-  // Agora também persiste paga / data_pagamento (usado para quitar compras parceladas antecipadamente)
   async function atualizarGasto(g){
-    await sb.from('gastos').update({valor:g.valor, paga:g.paga||false, data_pagamento:g.dataPagamento||null, valor_parcela:g.valorParcela||null}).eq('id',g.id);
+    const {error} = await sb.from('gastos').update({
+      valor:g.valor, paga:g.paga||false, data_pagamento:g.dataPagamento||null,
+      valor_parcela:g.valorParcela||null, parcela_atual:g.parcelaAtual||null,
+    }).eq('id',g.id);
+    if(error){ alert('Não foi possível salvar a atualização do gasto na nuvem.\n\nDetalhe técnico: '+error.message); }
   }
   async function deletarGasto(id){ await sb.from('gastos').delete().eq('id',id); state.gastos = state.gastos.filter(x=>x.id!==id); render(); }
 
@@ -880,7 +875,6 @@
     if(data) state.pagamentosMes.push({...data, dividaId:data.divida_id, mesRef:data.mes_ref, tipo:data.tipo||'divida', data:new Date(data.created_at).getTime()});
   }
 
-  // ── SUPABASE: ORÇAMENTO / METAS / INVESTIMENTOS (novo) ─────────────────────
   async function salvarOrcamento(categoria, limite){
     const existente = state.orcamentos.find(o=>o.categoria===categoria);
     if(existente){
@@ -1008,8 +1002,7 @@
           </div>
           <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
             <button class="check-btn" data-id="${d.id}" data-action="pagar">${d.parcelado?`parcela ${d.parcelaAtual} ✓`:'paga ✓'}</button>
-            ${d.parcelado?'':`<button class="check-btn" data-id="${d.id}" data-action="parcelar">parcelar (total)</button>
-            <button class="check-btn" data-id="${d.id}" data-action="parcelar-por-parcela">parcelar (por parcela)</button>`}
+            ${d.parcelado?'':`<button class="check-btn" data-id="${d.id}" data-action="parcelar">parcelar</button>`}
           </div>
           <button class="del" data-id="${d.id}" data-kind="divida">✕</button>
         </div>`;
@@ -1033,19 +1026,22 @@
       const catTag = `<span class="tag categoria">${gastoCatLabel(g.categoria)}</span>`;
       if(pc){
         const quitadoTag = g.paga ? `<p class="imeta" style="margin-top:2px;"><span class="tag paga">quitado${g.dataPagamento?' em '+fmtData(g.dataPagamento):''}</span></p>` : '';
-        const botaoQuitar = g.paga
+        const botoes = g.paga
           ? `<button class="check-btn undo" data-id="${g.id}" data-action="reabrir-gasto">reabrir</button>`
-          : `<button class="check-btn" data-id="${g.id}" data-action="quitar-gasto">quitar ✓</button>`;
+          : `<button class="check-btn" data-id="${g.id}" data-action="pagar-parcela-gasto">parcela ${pc.parcelaAtual} ✓</button>
+             <button class="check-btn" data-id="${g.id}" data-action="quitar-gasto">quitar tudo ✓</button>`;
         return `
           <div class="item ${g.paga?'paga':''}" style="flex-wrap:wrap;">
             <div style="flex:1;min-width:0;">
               <p class="iname">${g.nome}</p>
               <p class="imeta">${fmt(pc.valorParcela)}/mês <span class="tag parcelado">parcela ${pc.parcelaAtual}/${pc.n}</span> ${catTag}</p>
-              <p class="imeta" style="margin-top:2px;">total ${fmt(pc.total)} · término ${pc.fim.toLocaleDateString('pt-BR',{month:'long',year:'numeric'})}</p>
-              <p class="imeta" style="margin-top:2px;color:var(--ok);">faltam ${pc.parcelasRestantes} parcela${pc.parcelasRestantes===1?'':'s'} · ${fmt(pc.parcelasRestantes*pc.valorParcela)}</p>
+              <p class="imeta" style="margin-top:2px;">total original ${fmt(pc.total)} · próxima parcela vence ${pc.dataProxima.toLocaleDateString('pt-BR',{day:'2-digit',month:'short',year:'numeric'})}</p>
+              <p class="imeta" style="margin-top:2px;color:var(--ok);">restante: ${fmt(g.valor)} (${pc.parcelasRestantes} parcela${pc.parcelasRestantes===1?'':'s'})</p>
               ${quitadoTag}
             </div>
-            ${botaoQuitar}
+            <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
+              ${botoes}
+            </div>
             <button class="del" data-id="${g.id}" data-kind="gasto">✕</button>
           </div>`;
       }
@@ -1068,7 +1064,6 @@
       const n = Number(g.numParcelas);
       return new Date(y, m-1+n-1, d).toISOString().slice(0,10);
     }
-    // Parcelados ativos (não quitados) e parcelados já quitados antecipadamente
     const parcelados = state.gastos.filter(g=>g.tipo==='parcelado'&&g.numParcelas&&g.dataInicio&&!g.paga);
     const parceladosQuitados = state.gastos.filter(g=>g.tipo==='parcelado'&&g.numParcelas&&g.dataInicio&&g.paga);
     const comData = state.gastos.filter(g=>g.tipo!=='parcelado'&&g.vencimento).sort((a,b)=>a.vencimento.localeCompare(b.vencimento));
@@ -1105,7 +1100,23 @@
       };
     });
 
-    // Quitar compra parcelada antecipadamente
+    document.querySelectorAll('[data-action="pagar-parcela-gasto"]').forEach(btn=>{
+      btn.onclick = async ()=>{
+        const g = state.gastos.find(x=>x.id===btn.dataset.id);
+        if(!g) return;
+        const pc = calcParcelas(g);
+        if(!pc) return;
+        const vp = pc.valorParcela;
+        const isoHoje = new Date().toISOString().slice(0,10);
+        g.valor = Math.max(0, Number(g.valor) - vp);
+        const parcelaPaga = pc.parcelaAtual;
+        g.parcelaAtual = parcelaPaga + 1;
+        if(g.parcelaAtual > g.numParcelas){ g.paga = true; g.dataPagamento = isoHoje; }
+        await atualizarGasto(g);
+        await salvarHistorico('gasto', `${g.nome}: parcela ${parcelaPaga}/${pc.n} de ${fmt(vp)} paga em ${fmtData(isoHoje)}`);
+        render();
+      };
+    });
     document.querySelectorAll('[data-action="quitar-gasto"]').forEach(btn=>{
       btn.onclick = async ()=>{
         const g = state.gastos.find(x=>x.id===btn.dataset.id);
@@ -1117,7 +1128,6 @@
         render();
       };
     });
-    // Reabrir compra parcelada quitada por engano
     document.querySelectorAll('[data-action="reabrir-gasto"]').forEach(btn=>{
       btn.onclick = async ()=>{
         const g = state.gastos.find(x=>x.id===btn.dataset.id);
@@ -1129,7 +1139,7 @@
       };
     });
 
-    document.querySelectorAll('.check-btn:not(.ajustar-btn):not(.undo):not([data-action="quitar-gasto"])').forEach(btn=>{
+    document.querySelectorAll('.check-btn:not(.ajustar-btn):not(.undo):not([data-action="quitar-gasto"]):not([data-action="pagar-parcela-gasto"])').forEach(btn=>{
       btn.onclick = async ()=>{
         const d = state.dividas.find(x=>x.id===btn.dataset.id);
         if(!d) return;
@@ -1138,22 +1148,9 @@
           const n = Number(nRaw);
           if(!nRaw||!n||n<2) return;
           d.parcelado=true; d.totalParcelas=n; d.parcelaAtual=1; d.valorParcela=Math.round((d.valor/n)*100)/100;
-          d.minimo=d.valorParcela; // sincroniza o mínimo mensal com a parcela real, para não distorcer o cálculo de sobra
-          await atualizarDivida(d);
-          await salvarHistorico('gasto',`${d.nome}: parcelada em ${n}x de ${fmt(d.valorParcela)}`);
-          render(); return;
-        }
-        if(btn.dataset.action==='parcelar-por-parcela'){
-          const parcelaRaw = prompt(`Qual o valor da parcela de "${d.nome}"?`,'');
-          const parcela = parseValor(parcelaRaw);
-          if(!parcelaRaw||!parcela||parcela<=0) return;
-          // Nº de parcelas restantes = valor total da dívida ÷ valor da parcela (arredondado para cima)
-          const n = Math.max(1, Math.ceil(Number(d.valor)/parcela));
-          d.parcelado=true; d.totalParcelas=n; d.parcelaAtual=1; d.valorParcela=parcela;
-          d.valor = Math.round(parcela*n*100)/100; // ajusta o total para bater com parcela × parcelas
           d.minimo=d.valorParcela;
           await atualizarDivida(d);
-          await salvarHistorico('gasto',`${d.nome}: parcelada em ${n}x de ${fmt(parcela)} (calculado pelo valor da parcela)`);
+          await salvarHistorico('gasto',`${d.nome}: parcelada em ${n}x de ${fmt(d.valorParcela)}`);
           render(); return;
         }
         const isoHoje = new Date().toISOString().slice(0,10);
@@ -1176,8 +1173,8 @@
     });
 
     document.querySelectorAll('.undo').forEach(btn=>{
+      if(btn.dataset.action==='reabrir-gasto') return;
       btn.onclick = async ()=>{
-        if(btn.dataset.action==='reabrir-gasto') return; // já tratado acima
         const d = state.dividas.find(x=>x.id===btn.dataset.id);
         if(!d) return;
         d.paga=false; d.dataPagamento=null;
@@ -1211,7 +1208,6 @@
     renderResumoWidgets(ativas);
   }
 
-  // ── RESUMO: mini-widgets de metas e orçamento ─────────────────────────────
   function renderResumoWidgets(){
     const elMetas = document.getElementById('resumo-metas');
     if(state.metas.length===0){
@@ -1227,7 +1223,6 @@
       }).join('');
     }
     const elOrc = document.getElementById('resumo-orcamento');
-    const mesAtual = new Date().toISOString().slice(0,7);
     const gastosDoMes = c => state.gastos.filter(g=>g.categoria===c).reduce((a,g)=>a+gastoValorMensal(g),0);
     const preocupantes = state.orcamentos.map(o=>({o, gasto:gastosDoMes(o.categoria), pct:Math.round((gastosDoMes(o.categoria)/Number(o.limite))*100)||0}))
       .filter(x=>x.pct>=70).sort((a,b)=>b.pct-a.pct);
@@ -1241,7 +1236,6 @@
           </div>`).join('');
   }
 
-  // ── ORÇAMENTO ──────────────────────────────────────────────────────────────
   function renderOrcamento(totalGastosGlobal){
     const el = document.getElementById('lista-orcamento');
     if(state.orcamentos.length===0){ el.innerHTML='<p class="empty">Defina o limite de cada categoria acima para acompanhar aqui.</p>'; return; }
@@ -1263,7 +1257,6 @@
     document.querySelectorAll('#lista-orcamento .del').forEach(btn=>{ btn.onclick = ()=> deletarOrcamento(btn.dataset.id); });
   }
 
-  // ── METAS ──────────────────────────────────────────────────────────────────
   function renderMetas(){
     const el = document.getElementById('lista-metas');
     if(state.metas.length===0){ el.innerHTML='<p class="empty">Nenhuma meta cadastrada ainda.</p>'; return; }
@@ -1299,7 +1292,6 @@
     });
   }
 
-  // ── INVESTIMENTOS ────────────────────────────────────────────────────────
   function renderInvestimentos(){
     const totalInv = totalInvestidoValor('financeiro');
     const totalAtual = totalAtualInvestimentos('financeiro');
@@ -1661,8 +1653,14 @@
       const [y,m,d] = g.dataInicio.split('-').map(Number);
       for(let i=pc.parcelaAtual-1;i<pc.n&&i<pc.parcelaAtual+2;i++){
         const dt = new Date(y,m-1+i,d);
-        if(dt>=hoje) compromissos.push({destaque:false, dataOrdenacao:dt, label:`${g.nome} — parcela ${i+1}/${pc.n}`,
-          valor:pc.valorParcela, dataTexto:dt.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})});
+        const ehParcelaAtual = i===pc.parcelaAtual-1;
+        const atrasada = ehParcelaAtual && dt<hoje;
+        if(dt>=hoje || ehParcelaAtual) compromissos.push({
+          destaque:atrasada, dataOrdenacao: atrasada ? hoje : dt,
+          label:`${g.nome} — parcela ${i+1}/${pc.n}${atrasada?' (atrasada)':''}`,
+          valor:pc.valorParcela,
+          dataTexto: atrasada ? 'venceu '+dt.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'}) : dt.toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})
+        });
       }
       const fim = new Date(y,m-1+pc.n-1,d);
       if(fim>=hoje) compromissos.push({destaque:false, dataOrdenacao:new Date(fim.getTime()+1), label:`${g.nome} — última parcela (${pc.n}/${pc.n}) 🎉`,
@@ -1745,7 +1743,6 @@
     };
   }
 
-  // ── FORMULÁRIOS / NAVEGAÇÃO ─────────────────────────────────────────────
   document.querySelectorAll('nav button').forEach(btn=>{
     btn.onclick=()=>{
       document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
@@ -1755,47 +1752,16 @@
     };
   });
 
-  let modoParcelaGasto = 'total';
-
   function toggleCamposGasto(){
     const tipo = document.getElementById('g-tipo').value;
     const parcelasRow = document.getElementById('g-parcelas-row');
     const vencRow = document.getElementById('g-vencimento-row');
-    const modoRow = document.getElementById('g-modo-parcela-row');
-    const valorParcelaRow = document.getElementById('g-valor-parcela-row');
-    const valorInput = document.getElementById('g-valor');
     const preview = document.getElementById('g-parcela-preview');
-    if(tipo==='parcelado'){
-      parcelasRow.style.display='flex'; vencRow.style.display='none'; modoRow.style.display='flex';
-      aplicarModoParcelaGasto();
-    } else {
-      parcelasRow.style.display='none'; vencRow.style.display='flex'; modoRow.style.display='none';
-      valorParcelaRow.style.display='none'; valorInput.style.display='block'; valorInput.required=true;
-      preview.style.display='none';
-    }
-  }
-  function aplicarModoParcelaGasto(){
-    const valorInput = document.getElementById('g-valor');
-    const valorParcelaRow = document.getElementById('g-valor-parcela-row');
-    if(modoParcelaGasto==='parcela'){
-      valorInput.style.display='none'; valorInput.required=false;
-      valorParcelaRow.style.display='flex';
-    } else {
-      valorInput.style.display='block'; valorInput.required=true;
-      valorParcelaRow.style.display='none';
-    }
+    if(tipo==='parcelado'){ parcelasRow.style.display='flex'; vencRow.style.display='none'; }
+    else { parcelasRow.style.display='none'; vencRow.style.display='flex'; preview.style.display='none'; }
   }
   document.getElementById('g-tipo').addEventListener('change', toggleCamposGasto);
   toggleCamposGasto();
-  document.querySelectorAll('[data-modo-parc]').forEach(btn=>{
-    btn.onclick = ()=>{
-      modoParcelaGasto = btn.dataset.modoParc;
-      document.querySelectorAll('[data-modo-parc]').forEach(b=>b.classList.remove('active'));
-      btn.classList.add('active');
-      aplicarModoParcelaGasto();
-      atualizarPreviewParcela();
-    };
-  });
 
   function toggleCamposInvestimento(){
     const tipo = document.getElementById('i-tipo').value;
@@ -1814,25 +1780,19 @@
   toggleCamposInvestimento();
 
   function atualizarPreviewParcela(){
+    const valor = parseValor(document.getElementById('g-valor').value);
     const n = Number(document.getElementById('g-num-parcelas').value);
     const dataInicio = document.getElementById('g-data-inicio').value;
     const preview = document.getElementById('g-parcela-preview');
-    let parcela;
-    if(modoParcelaGasto==='parcela'){
-      parcela = parseValor(document.getElementById('g-valor-parcela').value);
-    } else {
-      const valor = parseValor(document.getElementById('g-valor').value);
-      parcela = (valor&&n) ? Math.round((valor/n)*100)/100 : 0;
-    }
-    if(parcela&&n&&n>=2&&dataInicio){
+    if(valor&&n&&n>=2&&dataInicio){
+      const parcela = Math.round((valor/n)*100)/100;
       const [y,m,d] = dataInicio.split('-').map(Number);
       const fim = new Date(y,m-1+n-1,d);
-      const totalCalc = Math.round(parcela*n*100)/100;
       preview.style.display='block';
-      preview.textContent = `${n}x de ${fmt(parcela)} · total ${fmt(totalCalc)} · término em ${fim.toLocaleDateString('pt-BR',{month:'long',year:'numeric'})}`;
+      preview.textContent = `${n}x de ${fmt(parcela)} · término em ${fim.toLocaleDateString('pt-BR',{month:'long',year:'numeric'})}`;
     } else { preview.style.display='none'; }
   }
-  ['g-valor','g-num-parcelas','g-data-inicio','g-valor-parcela'].forEach(id=>{
+  ['g-valor','g-num-parcelas','g-data-inicio'].forEach(id=>{
     document.getElementById(id).addEventListener('input', ()=>{ if(document.getElementById('g-tipo').value==='parcelado') atualizarPreviewParcela(); });
   });
 
@@ -1888,6 +1848,8 @@
     e.preventDefault();
     const btn = e.target.querySelector('button'); btn.disabled=true;
     const nome = document.getElementById('g-nome').value.trim();
+    const valor = parseValor(document.getElementById('g-valor').value);
+    if(!nome||!valor){ btn.disabled=false; return; }
     const tipo = document.getElementById('g-tipo').value;
     const categoria = document.getElementById('g-categoria').value;
     const vencimento = tipo!=='parcelado' ? (document.getElementById('g-vencimento').value||null) : null;
@@ -1895,27 +1857,14 @@
     const numParcelas = tipo==='parcelado' ? Number(document.getElementById('g-num-parcelas').value)||null : null;
     const dataInicio = tipo==='parcelado' ? (document.getElementById('g-data-inicio').value||null) : null;
     if(tipo==='parcelado'&&(!numParcelas||!dataInicio)){ btn.disabled=false; alert('Informe o número de parcelas e a data da 1ª parcela.'); return; }
-
-    let valor, valorParcelaInformada = null;
-    if(tipo==='parcelado' && modoParcelaGasto==='parcela'){
-      // Calcula pelo valor da parcela: total = parcela × parcelas restantes (nº de parcelas)
-      valorParcelaInformada = parseValor(document.getElementById('g-valor-parcela').value);
-      if(!valorParcelaInformada){ btn.disabled=false; alert('Informe o valor da parcela.'); return; }
-      valor = Math.round(valorParcelaInformada*numParcelas*100)/100;
-    } else {
-      // Comportamento padrão (não muda): informa o valor total, parcela é calculada dividindo
-      valor = parseValor(document.getElementById('g-valor').value);
-    }
-    if(!nome||!valor){ btn.disabled=false; return; }
-
-    await salvarGasto({nome,valor,tipo,categoria,vencimento,gastoRecorrencia,valorBase:tipo==='fixo-consumo'?valor:null,numParcelas,dataInicio,valorParcela:valorParcelaInformada});
+    // Valor da parcela é fixado na criação (total ÷ nº de parcelas) e não muda mais depois — cada pagamento
+    // decrementa o valor total restante, igual já acontece com dívidas parceladas.
+    const valorParcela = tipo==='parcelado' ? Math.round((valor/numParcelas)*100)/100 : null;
+    await salvarGasto({nome,valor,tipo,categoria,vencimento,gastoRecorrencia,valorBase:tipo==='fixo-consumo'?valor:null,numParcelas,dataInicio,valorParcela});
     const tipoTxt = tipoLabel(tipo);
-    const parcelaExibida = valorParcelaInformada || (numParcelas?Math.round((valor/numParcelas)*100)/100:0);
-    const descExtra = tipo==='parcelado'&&numParcelas ? ` · ${numParcelas}x de ${fmt(parcelaExibida)}` : vencimento?` · vence ${fmtData(vencimento)}`:'';
+    const descExtra = tipo==='parcelado'&&numParcelas ? ` · ${numParcelas}x de ${fmt(valorParcela)}` : vencimento?` · vence ${fmtData(vencimento)}`:'';
     await salvarHistorico('gasto',`${nome}: ${fmt(valor)} (${tipoTxt}, ${gastoCatLabel(categoria)})${descExtra}`);
-    e.target.reset(); modoParcelaGasto='total';
-    document.querySelectorAll('[data-modo-parc]').forEach(b=>b.classList.toggle('active', b.dataset.modoParc==='total'));
-    toggleCamposGasto();
+    e.target.reset(); toggleCamposGasto();
     document.getElementById('g-parcela-preview').style.display='none';
     btn.disabled=false;
   });
@@ -2070,7 +2019,6 @@
 
   sb.auth.onAuthStateChange(async (event)=>{ if(event==='PASSWORD_RECOVERY') mostrarTela('redefinir-screen'); });
 
-  // ── CALCULADORA (igual ao original) ────────────────────────────────────
   function resultadoHtml(linhas, botoes){
     return `<div class="calc-resultado">${linhas.map(l=>`<div class="cr-linha"><span>${l.label}</span><span class="${l.cls||''}">${l.valor}</span></div>`).join('')}</div>
       <div class="calc-enviar">${botoes.map(b=>`<button data-acao="${b.acao}" data-payload='${JSON.stringify(b.payload)}'>${b.label}</button>`).join('')}</div>`;
@@ -2139,11 +2087,9 @@
     const calcTotal = (v,t,n)=>{ if(t===0) return v; return v*(t*Math.pow(1+t,n))/(Math.pow(1+t,n)-1)*n; };
     const totalOriginal = calcTotal(valor,taxa,prazo);
     const pmtOriginal = totalOriginal/prazo;
-    // Saldo devedor restante no momento da antecipação (valor presente das parcelas que faltam)
     const saldoNaAntecipacao = taxa===0
       ? pmtOriginal*(prazo-antecipa)
       : valor*Math.pow(1+taxa,antecipa) - pmtOriginal*((Math.pow(1+taxa,antecipa)-1)/taxa);
-    // O que o usuário efetivamente paga: as parcelas já pagas até a antecipação + o saldo devedor quitado à vista
     const pagoAteAntecipacao = pmtOriginal*antecipa;
     const totalAntecipando = pagoAteAntecipacao + Math.max(saldoNaAntecipacao,0);
     const economia = totalOriginal - totalAntecipando;
@@ -2196,7 +2142,6 @@
     };
   });
 
-  // ── INICIALIZAÇÃO ─────────────────────────────────────────────────────────
   const {data:{session:sessaoInicial}} = await sb.auth.getSession();
   if(sessaoInicial?.user) entrarNoApp(sessaoInicial.user);
   else mostrarTela('auth-screen');
